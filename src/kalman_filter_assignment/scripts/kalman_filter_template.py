@@ -118,7 +118,7 @@ class SimpleKalmanFilterNode:
 
             # State update
             x_upd = x_pred + K.dot(y_innov)
-            x_upd[2,0] = self._wrap_angle(x_upd[2,0])
+            x_upd[2,0] = self.wrap_angle(x_upd[2,0])
 
             # Covariance update
             I = np.eye(3)
