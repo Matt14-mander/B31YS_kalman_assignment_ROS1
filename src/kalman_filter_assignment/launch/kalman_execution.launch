@@ -11,6 +11,6 @@
     </node>
 
     <!-- Argument for student name -->
-    <arg name="student_name" default="student" />
+    <arg name="student_name" default="ZhengYuanhao" />
 </launch>
 

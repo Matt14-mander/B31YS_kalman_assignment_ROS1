@@ -23,9 +23,14 @@ class SimpleKalmanFilterNode:
         self.x = np.zeros((3,1))
         self.P = np.eye(3) * 0.1
 
+        # Process and Measurement Noise Covariances
+        q_pos = rospy.get_param('~q_pos', 1e-3)      
+        q_yaw = rospy.get_param('~q_yaw', 1e-4)      
+        r_gps = rospy.get_param('~r_gps', 1e-2)      
+
         # Noise Covariances
-        self.Q = 0 # process noise. What should be the values here? 
-        self.R = 0 # GPS measurement noise
+        self.Q = np.diag([q_pos, q_pos, q_yaw]) # process noise. What should be the values here? 
+        self.R = np.diag([r_gps, r_gps]) # GPS measurement noise
 
         # Latest command velocities
         self.vx = 0.0
@@ -53,23 +58,74 @@ class SimpleKalmanFilterNode:
             [msg.pose.pose.position.y]
         ])
 
+    def wrap_angle(self, a):
+        return (a + np.pi) % (2*np.pi) - np.pi
+
+
     def update_kalman(self, event):
         """
         This is the main Kalman filter loop. In this function
         you should do a prediction plus a correction step. """
-        # --- Prediction ---
-        x_pred = np.zeros((3,1))
+        dt = self.dt
 
-	# what goes here??? 
+        x = float(self.x[0,0])
+        y = float(self.x[1,0])
+        yaw = float(self.x[2,0])
+
+        vx = float(self.vx)
+        vy = float(self.vy)
+        wz = float(self.yaw_rate)
+
+        # --- Prediction ---
+        dx = (vx*np.cos(yaw) - vy*np.sin(yaw)) * dt
+        dy = (vx*np.sin(yaw) + vy*np.cos(yaw)) * dt
+        dyaw = wz * dt
+
+        x_pred = np.zeros((3,1))
+        x_pred[0,0] = x + dx
+        x_pred[1,0] = y + dy
+        x_pred[2,0] = self.wrap_angle(yaw + dyaw)
+
+        dxd_yaw = (-vx*np.sin(yaw) - vy*np.cos(yaw)) * dt
+        dyd_yaw = ( vx*np.cos(yaw) - vy*np.sin(yaw)) * dt
+        F = np.array([[1, 0, dxd_yaw],
+                      [0, 1, dyd_yaw],
+                      [0, 0, 1]])
+        
+        P_pred = F @ self.P @ F.T + self.Q
 	
         self.x = x_pred
         self.P = P_pred
 
         # --- Correction ---
-        
-        
-        self.x = 0 # what should go here? 
-        
+        if self.gps is not None:
+            z = self.gps   # [x_gps, y_gps]
+
+            # z = H x + v
+            H = np.array([
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0]
+            ])
+
+            # Innovation y = z - H x_pred
+            y_innov = z - H.dot(x_pred)
+
+            # Innovation covariance S
+            S = H.dot(P_pred).dot(H.T) + self.R
+
+            # Kalman Gain K
+            K = P_pred.dot(H.T).dot(np.linalg.inv(S))
+
+            # State update
+            x_upd = x_pred + K.dot(y_innov)
+            x_upd[2,0] = self._wrap_angle(x_upd[2,0])
+
+            # Covariance update
+            I = np.eye(3)
+            P_upd = (I - K.dot(H)).dot(P_pred)
+
+            self.x = x_upd
+            self.P = P_upd
 
         self.publish_estimate()
 
