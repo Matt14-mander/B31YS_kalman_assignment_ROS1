@@ -3,7 +3,7 @@ import rospy
 import numpy as np
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Twist
-from tf.transformations import quaternion_from_euler
+from tf.transformations import quaternion_from_euler, euler_from_quaternion
 
 class SimpleKalmanFilterNode:
     def __init__(self):
@@ -15,7 +15,7 @@ class SimpleKalmanFilterNode:
         #subscriber
         rospy.Subscriber('/cmd_vel', Twist, self.cmd_vel_callback)
         rospy.Subscriber('/fake_gps', Odometry, self.gps_callback)
-        
+        rospy.Subscriber('/odom1', Odometry, self.odom_callback)
 
         # Publisher 
         self.pub = rospy.Publisher('/kalman_estimate', Odometry, queue_size=10)
@@ -27,11 +27,14 @@ class SimpleKalmanFilterNode:
         # Process and Measurement Noise Covariances
         q_pos = rospy.get_param('~q_pos', 1e-3)      
         q_yaw = rospy.get_param('~q_yaw', 1e-4)      
-        r_gps = rospy.get_param('~r_gps', 1e-2)      
+        r_gps = rospy.get_param('~r_gps', 1e-2)   
+        self.r_odom_pos = rospy.get_param('~r_odom_pos', 1e-3)
+        self.r_odom_yaw = rospy.get_param('~r_odom_yaw', 1e-4)   
 
         # Noise Covariances
         self.Q = np.diag([q_pos, q_pos, q_yaw]) # process noise. What should be the values here? 
-        self.R = np.diag([r_gps, r_gps]) # GPS measurement noise
+        self.R_gps = np.diag([r_gps, r_gps]) # GPS measurement noise
+        self.R_odom = np.diag([self.r_odom_pos, self.r_odom_pos, self.r_odom_yaw]) # odom1 measurement noise
 
         # Latest command velocities
         self.vx = 0.0
@@ -41,9 +44,11 @@ class SimpleKalmanFilterNode:
         # Latest GPS measurement
         self.gps = None
 
+        # Latest odom1 measurement
+        self.odom1 = None
+
         # Timer for Kalman update
         rospy.Timer(rospy.Duration(self.dt), self.update_kalman)
-
         rospy.loginfo("Kalman Filter start")
 
     def cmd_vel_callback(self, msg):
@@ -59,6 +64,16 @@ class SimpleKalmanFilterNode:
             [msg.pose.pose.position.y]
         ])
 
+    def odom_callback(self, msg):
+        """Odometry callback (not used in this simple filter)."""
+        q = msg.pose.pose.orientation
+        yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])[2]
+        self.odom1 = np.array([
+            [msg.pose.pose.position.x],
+            [msg.pose.pose.position.y],
+            [self.wrap_angle(yaw)]
+        ])
+        
     def wrap_angle(self, a):
         return (a + np.pi) % (2*np.pi) - np.pi
 
@@ -98,7 +113,35 @@ class SimpleKalmanFilterNode:
         self.x = x_pred
         self.P = P_pred
 
-        # --- Correction ---
+        # Correction-1
+        if self.odom1 is not None:
+            z_odom = self.odom1  # [x_odom, y_odom, yaw_odom]
+
+            # z = H x + v
+            H_odom = np.eye(3)
+
+            # Innovation y = z - H x_pred
+            y_innov_odom = z_odom - H_odom.dot(x_pred)
+            y_innov_odom[2,0] = self.wrap_angle(y_innov_odom[2,0])
+
+            # Innovation covariance S
+            S_odom = H_odom.dot(P_pred).dot(H_odom.T) + self.R_odom
+
+            # Kalman Gain K
+            K_odom = P_pred.dot(H_odom.T).dot(np.linalg.inv(S_odom))
+
+            # State update
+            x_upd_odom = x_pred + K_odom.dot(y_innov_odom)
+            x_upd_odom[2,0] = self.wrap_angle(x_upd_odom[2,0])
+
+            # Covariance update
+            I = np.eye(3)
+            P_upd_odom = (I - K_odom.dot(H_odom)).dot(P_pred)
+
+            self.x = x_upd_odom
+            self.P = P_upd_odom
+
+        # Correction-2
         if self.gps is not None:
             z = self.gps   # [x_gps, y_gps]
 
@@ -112,7 +155,7 @@ class SimpleKalmanFilterNode:
             y_innov = z - H.dot(x_pred)
 
             # Innovation covariance S
-            S = H.dot(P_pred).dot(H.T) + self.R
+            S = H.dot(P_pred).dot(H.T) + self.R_gps
 
             # Kalman Gain K
             K = P_pred.dot(H.T).dot(np.linalg.inv(S))
