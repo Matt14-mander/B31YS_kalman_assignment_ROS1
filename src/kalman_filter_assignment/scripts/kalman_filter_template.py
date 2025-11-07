@@ -15,6 +15,7 @@ class SimpleKalmanFilterNode:
         #subscriber
         rospy.Subscriber('/cmd_vel', Twist, self.cmd_vel_callback)
         rospy.Subscriber('/fake_gps', Odometry, self.gps_callback)
+        
 
         # Publisher 
         self.pub = rospy.Publisher('/kalman_estimate', Odometry, queue_size=10)
